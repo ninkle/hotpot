@@ -10,6 +10,8 @@ import torch
 # import pickle
 import torch
 import os
+import re
+import itertools
 from joblib import Parallel, delayed
 
 import torch
@@ -161,13 +163,26 @@ def _process_article(article, config):
     ques_chars = [list(token) for token in ques_tokens]
 
     example = {'context_tokens': context_tokens,'context_chars': context_chars, 'ques_tokens': ques_tokens, 'ques_chars': ques_chars, 'y1s': [best_indices[0]], 'y2s': [best_indices[1]], 'id': article['_id'], 'start_end_facts': start_end_facts}
+    seps = [1 if i == "<t>" else 0 for i in example["context_tokens"]]
+    ptrs = torch.nonzero(torch.Tensor(seps))
+    shifted = ptrs[1:]
+    lengths = shifted - ptrs[:-1]
+    example["lengths"] = lengths 
+
     eval_example = {'context': text_context, 'spans': flat_offsets, 'answer': [answer], 'id': article['_id'],
             'sent2title_ids': sent2title_ids}
+
+    eval_ptrs = []
+    for match in re.finditer("<t>", text_context):
+        eval_ptrs.append(match.start())
+    eval_shifted = torch.Tensor(eval_ptrs[1:])
+    eval_lengths = eval_shifted - torch.Tensor(eval_ptrs[:-1])
+    eval_example["lengths"] = eval_lengths
     return example, eval_example
 
 def process_file(filename, config, word_counter=None, char_counter=None):
     data = json.load(open(filename, 'r'))
-
+    
     examples = []
     eval_examples = {}
 
@@ -259,10 +274,10 @@ def build_features(config, examples, data_type, out_file, word2idx_dict, char2id
 
         total += 1
 
-        context_idxs = np.zeros(para_limit, dtype=np.int64)
-        context_char_idxs = np.zeros((para_limit, char_limit), dtype=np.int64)
-        ques_idxs = np.zeros(ques_limit, dtype=np.int64)
-        ques_char_idxs = np.zeros((ques_limit, char_limit), dtype=np.int64)
+        context_idxs = torch.LongTensor(para_limit).zero_()
+        context_char_idxs = torch.LongTensor(para_limit, char_limit).zero_()
+        ques_idxs = torch.LongTensor(ques_limit).zero_()
+        ques_char_idxs = torch.LongTensor(ques_limit, char_limit).zero_()
 
         def _get_word(word):
             for each in (word, word.lower(), word.capitalize(), word.upper()):
@@ -275,29 +290,37 @@ def build_features(config, examples, data_type, out_file, word2idx_dict, char2id
                 return char2idx_dict[char]
             return 1
 
-        context_idxs[:len(example['context_tokens'])] = [_get_word(token) for token in example['context_tokens']]
-        ques_idxs[:len(example['ques_tokens'])] = [_get_word(token) for token in example['ques_tokens']]
+        for i, token in enumerate(example["context_tokens"]):
+            context_idxs[i] = _get_word(token)
+
+        for i, token in enumerate(example["ques_tokens"]):
+            ques_idxs[i] = _get_word(token)
 
         for i, token in enumerate(example["context_chars"]):
-            l = min(len(token), char_limit)
-            context_char_idxs[i, :l] = [_get_char(char) for char in token[:l]]
+            for j, char in enumerate(token):
+                if j == char_limit:
+                    break
+                context_char_idxs[i, j] = _get_char(char)
 
         for i, token in enumerate(example["ques_chars"]):
-            l = min(len(token), char_limit)
-            ques_char_idxs[i, :l] = [_get_char(char) for char in token[:l]]
+            for j, char in enumerate(token):
+                if j == char_limit:
+                    break
+                ques_char_idxs[i, j] = _get_char(char)
 
         start, end = example["y1s"][-1], example["y2s"][-1]
         y1, y2 = start, end
 
-        datapoints.append({'context_idxs': torch.from_numpy(context_idxs),
-            'context_char_idxs': torch.from_numpy(context_char_idxs),
-            'ques_idxs': torch.from_numpy(ques_idxs),
-            'ques_char_idxs': torch.from_numpy(ques_char_idxs),
+        datapoints.append({'context_idxs': context_idxs,
+            'context_char_idxs': context_char_idxs,
+            'ques_idxs': ques_idxs,
+            'ques_char_idxs': ques_char_idxs,
             'y1': y1,
             'y2': y2,
             'id': example['id'],
-            'start_end_facts': example['start_end_facts']})
-    print("Build {} / {} instances of features in total".format(total, total_))
+            'start_end_facts': example['start_end_facts'],
+            'lengths': example["lengths"]})
+    print("Build {} / {} instances of quit(features in total".format(total, total_))
     # pickle.dump(datapoints, open(out_file, 'wb'), protocol=-1)
     torch.save(datapoints, out_file)
 
@@ -334,7 +357,7 @@ def prepro(config):
 
     if config.data_split == 'train':
         record_file = config.train_record_file
-        eval_file = config.train_eval_file
+        eval_file = config.train_eval_fileerec
     elif config.data_split == 'dev':
         record_file = config.dev_record_file
         eval_file = config.dev_eval_file
