@@ -163,21 +163,27 @@ def _process_article(article, config):
     ques_chars = [list(token) for token in ques_tokens]
 
     example = {'context_tokens': context_tokens,'context_chars': context_chars, 'ques_tokens': ques_tokens, 'ques_chars': ques_chars, 'y1s': [best_indices[0]], 'y2s': [best_indices[1]], 'id': article['_id'], 'start_end_facts': start_end_facts}
+    
+    ########################### custom #############################
     seps = [1 if i == "<t>" else 0 for i in example["context_tokens"]]
     ptrs = torch.nonzero(torch.Tensor(seps))
     shifted = ptrs[1:]
     lengths = shifted - ptrs[:-1]
     example["lengths"] = lengths 
+    ################################################################
 
     eval_example = {'context': text_context, 'spans': flat_offsets, 'answer': [answer], 'id': article['_id'],
             'sent2title_ids': sent2title_ids}
 
+    ########################### custom #############################
     eval_ptrs = []
     for match in re.finditer("<t>", text_context):
         eval_ptrs.append(match.start())
     eval_shifted = torch.Tensor(eval_ptrs[1:])
     eval_lengths = eval_shifted - torch.Tensor(eval_ptrs[:-1])
     eval_example["lengths"] = eval_lengths
+    ################################################################
+
     return example, eval_example
 
 def process_file(filename, config, word_counter=None, char_counter=None):
@@ -260,7 +266,7 @@ def build_features(config, examples, data_type, out_file, word2idx_dict, char2id
     char_limit = config.char_limit
 
     def filter_func(example):
-        return len(example["context_tokens"]) > para_limit or len(example["ques_tokens"]) > ques_limit
+        return len(example["context_tokens"]) > para_limit or len(example["ques_tokens"]) > ques_limit or len(example["lengths"]) != 9
 
     print("Processing {} examples...".format(data_type))
     datapoints = []
@@ -357,7 +363,7 @@ def prepro(config):
 
     if config.data_split == 'train':
         record_file = config.train_record_file
-        eval_file = config.train_eval_fileerec
+        eval_file = config.train_eval_file
     elif config.data_split == 'dev':
         record_file = config.dev_record_file
         eval_file = config.dev_eval_file
